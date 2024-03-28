@@ -1,0 +1,413 @@
+---
+- hosts: all
+  become: true
+
+  pre_tasks:
+    - name: Ensure system is updated
+      apt:
+        update_cache: yes
+      when: inventory_hostname not in groups['RabbitMq']
+
+
+- name: Install ufw on all servers
+  hosts: all
+  become: true
+  tasks:
+    - name: Install firewalld package
+      apt:
+        name: ufw
+        state: present
+
+
+
+
+
+- name: Stop ufw service on Ubuntu
+  hosts: all
+  become: true
+  tasks:
+    - name: Stop ufw service
+      service:
+        name: ufw
+        state: stopped
+
+
+
+
+- name: Installing MySQL server and configuring it
+  hosts: database
+  become: yes
+  vars:
+    DATABASE_PASS: "admin123"
+    DB_BACKUP_PATH: "/home/vagrant/vprofile-project/src/main/resources/db_backup.sql"
+
+  tasks:
+    - name: Install MySQL-server
+      apt:
+        name: mysql-server
+        state: present
+
+    - name: Install pip3
+      apt:
+        name: python3-pip
+        state: present
+
+    - name: Install MySQL module
+      pip:
+        name: pymysql
+        state: present
+
+    - name: Start and enable MySQL service
+      service:
+        name: mysql
+        state: started
+        enabled: yes
+
+    - name: Create database 'account'
+      mysql_db:
+        name: account
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        login_user: root
+        login_password: "{{ DATABASE_PASS }}"
+        state: present
+
+    - name: Create MySQL user 'admin' with all privileges on 'account' database
+      mysql_user:
+        name: admin
+        host: app01
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        login_user: root
+        login_password: "{{ DATABASE_PASS }}"
+        priv: 'account.*:ALL'
+        password: "{{ DATABASE_PASS }}"
+        state: present
+
+    - name: Install Git
+      apt:
+        name: git
+        state: present
+
+    - name: Check if GitHub repo exists
+      stat:
+        path: "~/vprofile-project"
+      register: repo_check
+
+    - name: Install GitHub repo if not exists
+      git:
+        repo: https://github.com/devopshydclub/vprofile-project.git
+        dest: "~/vprofile-project"
+      when: repo_check.stat.exists == false
+
+    - name: Upload SQL dump to MySQL 'account' database
+      mysql_db:
+        name: account
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        state: import
+        target: "{{ DB_BACKUP_PATH }}"
+        login_user: root
+        login_password: "{{ DATABASE_PASS }}"
+      when: repo_check.stat.exists == true
+
+
+
+
+
+
+- name: Provisioning Memcache
+  hosts: Memcache
+  become: yes
+  tasks:
+     - name: install memcache
+       apt:
+         name: memcached
+         state: present
+
+     - name: enable memcache service
+       service:
+               name: memcached
+               enabled: yes
+
+     - name: Create Memcached user
+       user:
+          name: memcached
+          system: yes
+
+
+     - name: Install firewalld
+       apt:
+         name: firewalld
+         state: present
+     - name:    
+       service:
+               name: firewalld
+               enabled: yes   
+
+     - name: Open port 11211 TCP
+       become: yes
+       firewalld:
+           port: 11211/tcp
+           permanent: yes
+           state: enabled
+
+     - name: open port on memcached
+       shell: memcached -p 11211 -U 11111 -u memcached -d
+
+
+
+     - name: Restart memcached
+       service:
+        name: memcached
+        state: restarted 
+
+
+
+- name: Provisioning RabbitMQ
+  hosts: RabbitMq
+  become: yes
+  tasks:
+    - name: Install dependencies
+      apt:
+        name:
+          - curl
+          - gnupg
+        state: present
+
+
+
+
+    - name: Add RabbitMQ repository
+      shell: |
+        curl -fsSL https://github.com/rabbitmq/signing-keys/releases/download/2.0/rabbitmq-release-signing-key.asc | sudo apt-key add -
+        echo "deb https://dl.bintray.com/rabbitmq-erlang/debian bionic erlang" | sudo tee /etc/apt/sources.list.d/bintray.rabbitmq-erlang.list
+        echo "deb https://dl.bintray.com/rabbitmq/debian bionic main" | sudo tee /etc/apt/sources.list.d/bintray.rabbitmq.list
+      args:
+        creates: /etc/apt/sources.list.d/bintray.rabbitmq-erlang.list
+
+
+
+    - name: Install RabbitMq-server
+      apt:
+        name: rabbitmq-server
+        state: present
+
+       
+    - name: Ensure RabbitMQ service is enabled and started
+      service:
+        name: rabbitmq-server
+        enabled: yes
+        state: started
+
+    - name: Create RabbitMQ user
+      rabbitmq_user:
+        user: Test
+        password: 12345
+        vhost: /
+        configure_priv: .*
+        read_priv: .*
+        write_priv: .*
+        state: present
+
+
+
+- name: Provisioning Tomcat
+  hosts: Tomcat
+  become: yes
+  tags:
+    - tomcat_setup
+
+  tasks:
+    - name: Install required packages
+      apt:
+        name:
+          - openjdk-8-jdk
+          - git
+          - maven
+          - wget
+      become: yes
+
+    - name: Check if Tomcat directory exists
+      stat:
+        path: /usr/local/tomcat8
+      register: tomcat_dir
+
+    - name: Download Tomcat
+      get_url:
+        url: "https://archive.apache.org/dist/tomcat/tomcat-8/v8.5.37/bin/apache-tomcat-8.5.37.tar.gz"
+        dest: "/tmp/apache-tomcat-8.5.37.tar.gz"
+      register: tomcat_download
+      when: not tomcat_dir.stat.exists
+
+    - name: Add tomcat user
+      user:
+        name: tomcat
+        home: /usr/local/tomcat8
+        shell: /sbin/nologin
+
+    - name: Extract Tomcat files
+      ansible.builtin.unarchive:
+        src: "/tmp/apache-tomcat-8.5.37.tar.gz"
+        dest: "/usr/local/"
+      when: tomcat_download.changed
+
+    - name: Change ownership of the files to tomcat
+      ansible.builtin.file:
+        path: "/usr/local/tomcat8"
+        owner: tomcat
+        group: tomcat
+        recurse: yes
+
+    - name: Check the new user tomcat with id tomcat
+      command: id tomcat
+
+    - name: Create systemd service file for Tomcat
+      template:
+        src: tomcat.service.j2
+        dest: /etc/systemd/system/tomcat.service
+      notify:
+        - Reload systemd
+
+    - name: Start Tomcat service
+      ansible.builtin.systemd:
+        name: tomcat
+        state: started
+
+    - name: Check if vprofile-project directory exists
+      stat:
+        path: /tmp/vprofile-project
+      register: vprofile_dir
+
+    - name: Code Build & deploy
+      git:
+        repo: https://github.com/devopshydclub/vprofile-project.git
+        dest: /tmp/vprofile-project
+        single_branch: yes
+        version: vp-rem
+      when: not vprofile_dir.stat.exists
+
+    - name: Update application.properties file
+      template:
+        src: application.properties.j2
+        dest: /tmp/vprofile-project/src/main/resources/application.properties
+      vars:
+        db_host: "db01"
+        db_username: "admin"
+        db_password: "admin123"
+        memcached_active_host: "mc01"
+        memcached_active_port: 11211
+        memcached_standby_host: "192.168.56.3"
+        memcached_standby_port: 11211
+        rabbitmq_address: "rmq01"
+        rabbitmq_port: 5672
+        rabbitmq_username: "test"
+        rabbitmq_password: "test"
+
+    - name: Run mvn install command
+      ansible.builtin.command:
+        cmd: mvn install
+        chdir: /tmp/vprofile-project
+
+    - name: Shutdown Tomcat service
+      ansible.builtin.systemd:
+        name: tomcat
+        state: stopped
+
+    - name: Remove default app
+      ansible.builtin.file:
+        path: /usr/local/tomcat8/webapps/ROOT
+        state: absent
+      become: yes
+
+    - name: Copy artifact to Tomcat webapps directory
+      ansible.builtin.shell: cp /tmp/vprofile-project/target/vprofile-v2.war /usr/local/tomcat8/webapps/ROOT.war
+
+    - name: Start Tomcat service
+      ansible.builtin.systemd:
+        name: tomcat
+        state: started
+
+    - name: Check Tomcat webapps directory
+      ansible.builtin.command: ls /usr/local/tomcat8/webapps/
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: yes
+
+
+
+    - name: Run mvn install command
+      shell: mvn install
+      args:
+        chdir: /tmp/vprofile-project
+
+
+
+
+
+    - name: Shutdown Tomcat service
+      systemd:
+        name: tomcat
+        state: stopped
+
+    - name: Remove default app
+      become: yes
+      shell: rm -rf /usr/local/tomcat8/webapps/ROOT
+      
+
+    - name: Copy artifact to Tomcat webapps directory
+      shell: cp /tmp/vprofile-project/target/vprofile-v2.war /usr/local/tomcat8/webapps/ROOT.war
+
+    - name: Start Tomcat service
+      systemd:
+        name: tomcat
+        state: started
+
+    - name: Check Tomcat webapps directory
+      command: ls /usr/local/tomcat8/webapps/
+
+  handlers:
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
+
+
+
+- name: Provision Nginx service
+  hosts: Nginx
+  become: yes
+  tags:
+    - Nginx-server
+
+  tasks:
+    - name: Install Nginx Server
+      apt:
+        name: nginx
+        state: present
+
+    - name: Create Nginx configuration file
+      become: yes
+      template:
+        src: /home/sagar/Ansible-project/nginx.conf.j2
+        dest: /etc/nginx/sites-available/vproapp
+        
+
+    - name: Remove default nginx config file
+      become: yes
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+
+    - name: Create symbolic link for our configuration file
+      become: yes
+      file:
+        src: /etc/nginx/sites-available/vproapp
+        dest: /etc/nginx/sites-enabled/vproapp
+        state: link
+
+    - name: Restart nginx service
+      become: yes
+      systemd:
+        name: nginx
+        state: restarted
+

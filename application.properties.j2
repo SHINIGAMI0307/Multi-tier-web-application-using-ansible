@@ -1,0 +1,20 @@
+# JDBC Configutation for Database Connection
+jdbc.driverClassName=com.mysql.jdbc.Driver
+jdbc.url=jdbc:mysql://{{ db_host }}:3306/accounts?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull
+jdbc.username={{ db_username }}
+jdbc.password={{ db_password }}
+
+# Memcached Configuration For Active and StandBy Host
+# For Active Host
+memcached.active.host={{ memcached_active_host }}
+memcached.active.port={{ memcached_active_port }}
+# For StandBy Host
+memcached.standBy.host={{ memcached_standby_host }}
+memcached.standBy.port={{ memcached_standby_port }}
+
+# RabbitMq Configuration
+rabbitmq.address={{ rabbitmq_address }}
+rabbitmq.port={{ rabbitmq_port }}
+rabbitmq.username={{ rabbitmq_username }}
+rabbitmq.password={{ rabbitmq_password }}
+
